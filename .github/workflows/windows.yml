@@ -5,6 +5,9 @@ name: Windows
 
 on:
   push:
+    branches:
+      - main
+      - 'feat/**'
     tags:
       - 'windows-v*'
   workflow_dispatch:
