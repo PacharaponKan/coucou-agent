@@ -1,9 +1,9 @@
-// Claude Code hook installation.
+// Claude Code + Codex hook installation.
 //
 // The rule from CLAUDE.md is strict and is followed to the letter:
-// read %USERPROFILE%\.claude\settings.json, take a dated backup, merge without
-// touching anybody else's hooks, show the diff, and write only after an explicit
-// click. Uninstall removes Coucou's entries and nothing else.
+// read the agent's user hook file, take a dated backup, merge without touching
+// anybody else's hooks, show the diff, and write only after an explicit click.
+// Uninstall removes Coucou's entries and nothing else.
 //
 // The command is only the quoted exe path in forward slashes plus the event name:
 // on Windows Claude Code runs hook commands through Git Bash, and anything with
@@ -31,6 +31,22 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("Notification", 10),
     ("Stop", 10),
     ("StopFailure", 10),
+    ("SubagentStart", 10),
+    ("SubagentStop", 10),
+];
+
+/// Codex exposes the same core lifecycle names as Claude Code, but not the
+/// Claude-only failure/notification events. SessionEnd and Interrupt have a
+/// documented maximum timeout of three seconds.
+pub const CODEX_HOOK_EVENTS: &[(&str, u64)] = &[
+    ("SessionStart", 10),
+    ("SessionEnd", 3),
+    ("UserPromptSubmit", 10),
+    ("PreToolUse", 10),
+    ("PostToolUse", 10),
+    ("PermissionRequest", 120),
+    ("Stop", 10),
+    ("Interrupt", 3),
     ("SubagentStart", 10),
     ("SubagentStop", 10),
 ];
@@ -68,6 +84,10 @@ pub fn settings_path() -> PathBuf {
     home().join(".claude").join("settings.json")
 }
 
+pub fn codex_hooks_path() -> PathBuf {
+    home().join(".codex").join("hooks.json")
+}
+
 /// Reads `~/.claude/settings.json`.
 ///
 /// The only error that means "start from nothing" is the file not being there.
@@ -81,6 +101,15 @@ fn read_settings() -> Result<Value, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
         // A lock, a permission problem, a bad drive: all of them mean we do not
         // know what is in there, and not knowing is not the same as empty.
+        Err(err) => Err(format!("Can't read {}: {err}", path.display())),
+    }
+}
+
+fn read_codex_hooks() -> Result<Value, String> {
+    let path = codex_hooks_path();
+    match std::fs::read(&path) {
+        Ok(bytes) => parse_settings(&bytes, &path.display().to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
         Err(err) => Err(format!("Can't read {}: {err}", path.display())),
     }
 }
@@ -111,9 +140,23 @@ fn read_settings_lossy() -> Value {
     read_settings().unwrap_or_else(|_| json!({}))
 }
 
+fn read_codex_hooks_lossy() -> Value {
+    read_codex_hooks().unwrap_or_else(|_| json!({}))
+}
+
 fn hook_command(event: &str) -> String {
     let exe = settings::hook_exe_path().to_string_lossy().replace('\\', "/");
     format!("\"{exe}\" {event}")
+}
+
+fn codex_hook_command(event: &str) -> String {
+    let exe = settings::hook_exe_path().to_string_lossy().replace('\\', "/");
+    format!("\"{exe}\" codex {event}")
+}
+
+fn codex_hook_command_windows(event: &str) -> String {
+    let exe = settings::hook_exe_path().to_string_lossy();
+    format!("\"{exe}\" codex {event}")
 }
 
 fn entry_is_ours(entry: &Value) -> bool {
@@ -151,6 +194,36 @@ fn merged(existing: &Value) -> Value {
             "hooks": [{
                 "type": "command",
                 "command": hook_command(event),
+                "timeout": timeout,
+            }]
+        }));
+        hooks.insert((*event).to_string(), Value::Array(list));
+    }
+
+    root.insert("hooks".into(), Value::Object(hooks));
+    Value::Object(root)
+}
+
+fn codex_merged(existing: &Value) -> Value {
+    let mut root = existing.as_object().cloned().unwrap_or_default();
+    let mut hooks = root
+        .get("hooks")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(Map::new);
+
+    for (event, timeout) in CODEX_HOOK_EVENTS {
+        let mut list = hooks
+            .get(*event)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        list.retain(|entry| !entry_is_ours(entry));
+        list.push(json!({
+            "hooks": [{
+                "type": "command",
+                "command": codex_hook_command(event),
+                "commandWindows": codex_hook_command_windows(event),
                 "timeout": timeout,
             }]
         }));
@@ -209,6 +282,11 @@ fn backup_path() -> PathBuf {
     p.with_file_name(format!("settings.json.bak-{}", stamp()))
 }
 
+fn codex_backup_path() -> PathBuf {
+    let p = codex_hooks_path();
+    p.with_file_name(format!("hooks.json.bak-{}", stamp()))
+}
+
 /// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
 /// the question is only "is this still the file I showed the user?".
 fn fingerprint(bytes: &[u8]) -> String {
@@ -221,7 +299,15 @@ fn fingerprint(bytes: &[u8]) -> String {
 }
 
 fn current_fingerprint() -> String {
-    match std::fs::read(settings_path()) {
+    fingerprint_path(&settings_path())
+}
+
+fn codex_current_fingerprint() -> String {
+    fingerprint_path(&codex_hooks_path())
+}
+
+fn fingerprint_path(path: &Path) -> String {
+    match std::fs::read(path) {
         Ok(bytes) => fingerprint(&bytes),
         Err(_) => fingerprint(b""),
     }
@@ -294,6 +380,78 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
 
     // Write beside the target and rename over it: a crash or a full disk leaves
     // the original settings.json intact rather than half a file.
+    let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));
+    std::fs::write(&temp, text.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
+    if let Err(err) = std::fs::rename(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("write failed: {err}"));
+    }
+    Ok(backup.to_string_lossy().to_string())
+}
+
+pub fn codex_status() -> HookStatus {
+    let current = read_codex_hooks_lossy();
+    let installed = current
+        .get("hooks")
+        .and_then(Value::as_object)
+        .map(|hooks| {
+            hooks
+                .values()
+                .filter_map(Value::as_array)
+                .flatten()
+                .any(entry_is_ours)
+        })
+        .unwrap_or(false);
+    let hook_path = settings::hook_exe_path();
+    HookStatus {
+        installed,
+        settings_path: codex_hooks_path().to_string_lossy().to_string(),
+        hook_ready: hook_path.exists(),
+        hook_path: hook_path.to_string_lossy().to_string(),
+    }
+}
+
+pub fn codex_preview(install: bool) -> Result<HookPreview, String> {
+    let current = read_codex_hooks()?;
+    let next = if install {
+        codex_merged(&current)
+    } else {
+        without_ours(&current)
+    };
+    Ok(HookPreview {
+        diff: unified_diff(&pretty(&current), &pretty(&next)),
+        backup: codex_backup_path().to_string_lossy().to_string(),
+        settings_path: codex_hooks_path().to_string_lossy().to_string(),
+        fingerprint: codex_current_fingerprint(),
+    })
+}
+
+pub fn codex_write(install: bool, fingerprint: &str) -> Result<String, String> {
+    let path = codex_hooks_path();
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+
+    let current = read_codex_hooks()?;
+    if codex_current_fingerprint() != fingerprint {
+        return Err(format!(
+            "{} changed since the preview. Nothing was written — review the new diff.",
+            path.display()
+        ));
+    }
+
+    let backup = codex_backup_path();
+    if path.exists() {
+        std::fs::copy(&path, &backup).map_err(|e| format!("backup failed: {e}"))?;
+    }
+
+    let next = if install {
+        codex_merged(&current)
+    } else {
+        without_ours(&current)
+    };
+    let mut text = pretty(&next);
+    text.push('\n');
+
     let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));
     std::fs::write(&temp, text.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
     if let Err(err) = std::fs::rename(&temp, &path) {
@@ -502,6 +660,31 @@ mod tests {
         // And removing ours puts it back exactly as it was.
         let cleaned = without_ours(&after);
         assert_eq!(cleaned, existing);
+    }
+
+    #[test]
+    fn codex_merge_tags_the_relay_and_preserves_foreign_hooks() {
+        let existing = serde_json::json!({
+            "description": "my hooks",
+            "hooks": {
+                "PreToolUse": [
+                    { "hooks": [{ "type": "command", "command": "keep-this.exe" }] }
+                ]
+            }
+        });
+        let after = codex_merged(&existing);
+        assert_eq!(after["description"], "my hooks");
+        let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
+        assert!(pre.iter().any(|entry| {
+            serde_json::to_string(entry)
+                .unwrap()
+                .contains("keep-this.exe")
+        }));
+        assert!(pre.iter().any(|entry| {
+            let text = serde_json::to_string(entry).unwrap();
+            text.contains("coucou-hook") && text.contains("codex PreToolUse")
+        }));
+        assert!(after["hooks"]["Interrupt"].is_array());
     }
 
     #[test]

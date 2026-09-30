@@ -1,7 +1,7 @@
-//! coucou-hook — the relay Claude Code runs on every hook event.
+//! coucou-hook — the relay Claude Code and Codex run on every hook event.
 //!
-//! Reads the hook JSON on stdin, adds a little terminal context, and hands it to
-//! Coucou over the named pipe `\\.\pipe\coucou-<sid>`.
+//! Reads hook JSON on stdin, tags which agent produced it, adds a little terminal
+//! context, and hands it to Coucou over the named pipe `\\.\pipe\coucou-<sid>`.
 //!
 //! Hard rule (docs/CLAUDE.md): **never block Claude Code.**
 //! * If the pipe does not exist — Coucou is closed — we exit 0 immediately with
@@ -13,7 +13,10 @@
 //!   island is the whole point. No answer means empty stdout, and Claude Code
 //!   asks in the terminal exactly as if Coucou were not installed.
 //!
-//! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).
+//! Usage:
+//! * `coucou-hook <EventName>` — legacy/current Claude Code form.
+//! * `coucou-hook codex <EventName>` — Codex form.
+//! The event name is also read from the JSON and wins when present.
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -127,9 +130,16 @@ fn read_event() -> Option<(String, String)> {
     let mut payload = serde_json::from_slice::<serde_json::Value>(&raw).ok()?;
     let map = payload.as_object_mut()?;
 
-    // The event name is passed as argv[1] by the hook command; the JSON usually
-    // carries it too. Trust argv when the JSON is missing it.
-    let arg_event = std::env::args().nth(1).unwrap_or_default();
+    // Claude Code historically invokes `coucou-hook <Event>`. Codex uses the
+    // explicit `coucou-hook codex <Event>` form so the front end can keep both
+    // sessions separate even though their lifecycle event names overlap.
+    let mut args = std::env::args().skip(1);
+    let first = args.next().unwrap_or_default();
+    let (agent_source, arg_event) = match first.as_str() {
+        "codex" => ("codex", args.next().unwrap_or_default()),
+        "claude" => ("claude", args.next().unwrap_or_default()),
+        _ => ("claude", first),
+    };
     let event = map
         .get("hook_event_name")
         .and_then(|v| v.as_str())
@@ -137,6 +147,10 @@ fn read_event() -> Option<(String, String)> {
         .filter(|s| !s.is_empty())
         .unwrap_or(arg_event);
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
+    map.insert(
+        "agent_source".into(),
+        serde_json::Value::String(agent_source.to_string()),
+    );
 
     for field in DROPPED_FIELDS {
         map.remove(*field);

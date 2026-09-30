@@ -6,7 +6,7 @@
 
 **Mochi doesn't get a notch on a PC — so it lives at the top of your screen instead.**
 
-Approve Claude Code permissions, watch your session work, drop a file, chat with Claude, keep an eye on your services — without leaving what you're doing.
+Watch Claude Code and Codex work, approve their permission requests, drop a file, chat with Claude, and keep an eye on your services — without leaving what you're doing.
 
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)
@@ -47,9 +47,9 @@ installs for the current user only — no admin prompt.
 | `Esc` | Closes the island |
 | Tray icon | Open, Settings…, Pause, Quit |
 
-Everything else happens on its own: a Claude Code permission request opens the
-island with **Deny / Allow**, a finished session shows what it did, and
-your integrations sit in the coloured pills next to Mochi.
+Everything else happens on its own: Claude Code and Codex are separate agent
+pills, permission requests open the island with **Deny / Allow**, finished
+sessions show what they did, and your integrations sit beside them.
 
 ## Claude Code
 
@@ -67,6 +67,26 @@ never blocked or slowed down by Coucou.** If nobody answers a permission request
 in time, Coucou stays quiet and Claude Code asks in the terminal as usual.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
+
+## Codex
+
+Install the Codex CLI first:
+
+```powershell
+npm install -g @openai/codex@latest
+```
+
+Then open **Settings… → Codex → Install hooks…**. Coucou previews the exact
+change, preserves existing hooks, backs up `%USERPROFILE%\.codex\hooks.json`,
+and writes only after you confirm.
+
+Start a new Codex session after installation. Codex treats user hooks as
+unmanaged hooks, so the first session may ask you to review them. Open `/hooks`
+in Codex, review Coucou's entries, and trust them once.
+
+Codex and Claude Code share the same tiny relay, but each event is tagged before
+it reaches the island. Their working state, current project, tool steps, badges,
+subagents, completion state and permission requests therefore remain separate.
 
 ## Chat and keys
 
@@ -127,7 +147,7 @@ windows/
     views/             every island view
     settings/          the settings window
   src-tauri/           Rust backend: window, named pipe, Claude API, pollers
-  hook/                coucou-hook.exe, the Claude Code relay
+  hook/                coucou-hook.exe, shared Claude Code + Codex relay
   scripts/             icon generator
 ```
 

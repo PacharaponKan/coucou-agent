@@ -3,7 +3,7 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 
-export type AgentSource = "claudeCode" | "n8n";
+export type AgentSource = "claudeCode" | "codex" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
 
 export interface AgentTask {
@@ -18,12 +18,14 @@ export interface AgentTask {
   emote?: BotEmoteName | null;
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
+  sessionId?: string | null;
   sessionCwd?: string | null;
 }
 
 export interface ApprovalInfo {
   requestId: string;
   sessionId: string;
+  agentId: string;
   tool: string;
   command: string;
 }
@@ -58,7 +60,8 @@ const task = (
 
 /** AgentTask.integrationAgents — same ids, names and colours as macOS. */
 export const INTEGRATION_AGENTS: AgentTask[] = [
-  task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
+  task("integration_claude", "Claude Code", "#F5F6F8", "claudeCode"),
+  task("integration_codex", "Codex", "#10A37F", "codex"),
   task("integration_resend", "Resend", "#22C55E", "n8n"),
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
@@ -72,6 +75,8 @@ export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
   "integration_notion", "integration_calcom", "integration_stripe",
 ];
+
+export const CORE_AGENT_IDS = ["integration_claude", "integration_codex"] as const;
 
 /** What an integration poller last reported. */
 export interface IntegrationInfo {
@@ -199,11 +204,12 @@ class AppState {
     this.notify();
   }
 
-  /** loadIntegrationTasks() — VS Code always on, the rest opt-in (max 4). */
+  /** Core coding agents are always present; service integrations stay opt-in. */
   loadIntegrationTasks() {
     for (const proto of INTEGRATION_AGENTS) {
       const shouldLoad =
-        proto.id === "integration_claude" || this.settings.activeIntegrations.includes(proto.id);
+        CORE_AGENT_IDS.includes(proto.id as (typeof CORE_AGENT_IDS)[number])
+        || this.settings.activeIntegrations.includes(proto.id);
       const idx = this.tasks.findIndex((t) => t.id === proto.id);
       if (shouldLoad && idx < 0) this.tasks.push({ ...proto, steps: [] });
       if (!shouldLoad && idx >= 0) this.tasks.splice(idx, 1);
@@ -216,7 +222,7 @@ class AppState {
   }
 
   toggleIntegration(id: string) {
-    if (id === "integration_claude") return;
+    if (CORE_AGENT_IDS.includes(id as (typeof CORE_AGENT_IDS)[number])) return;
     const active = this.settings.activeIntegrations;
     if (active.includes(id)) {
       this.settings.activeIntegrations = active.filter((x) => x !== id);

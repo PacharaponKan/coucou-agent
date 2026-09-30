@@ -48,6 +48,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
       # Three files carry the version and they drift silently. Publishing a
       # "0.1.1" that installs a 0.1.0 is the kind of thing nobody notices until
       # a bug report arrives against the wrong build.
@@ -79,10 +82,10 @@ jobs:
           Get-ChildItem release | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
-        if: env.PUBLISH == 'true'
         with:
           name: Coucou-Windows-setup
           path: windows/release/Coucou-Windows-${{ steps.pack.outputs.version }}-setup.exe
+          if-no-files-found: error
 
       - name: Publish the release
         if: env.PUBLISH == 'true' && startsWith(github.ref, 'refs/tags/windows-v')

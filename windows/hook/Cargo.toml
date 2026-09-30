@@ -1,6 +1,6 @@
 [package]
 name = "coucou-hook"
-description = "Relays Claude Code hook events to Coucou over a named pipe"
+description = "Relays Claude Code and Codex hook events to Coucou over a named pipe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

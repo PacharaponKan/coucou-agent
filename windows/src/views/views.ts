@@ -69,6 +69,13 @@ function agentWho(task: AgentTask | null, label: string): HTMLElement {
   return row;
 }
 
+function agentLabel(task: AgentTask | null): string {
+  if (!task) return "Agent";
+  if (task.source === "claudeCode") return "Claude Code";
+  if (task.source === "codex") return "Codex";
+  return "n8n";
+}
+
 function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElement {
   const el = h("div", { class: "stack" }, ...children);
   el.style.padding = `4px ${padRight}px 4px ${padLeft}px`;
@@ -172,10 +179,11 @@ function buildOverview(actions: ViewActions): ViewHost {
         mode = null;
       }
 
-      // VS Code with a live Claude Code session keeps the ticker; every other
-      // pill shows its own card, exactly like IntegrationCardView.
+      // Coding agents with a live session keep the ticker; service integrations
+      // show their own cards.
       const sessionActive =
-        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
+        (task?.source === "claudeCode" || task?.source === "codex")
+        && (task.state !== "idle" || task.steps.length > 0);
 
       if (task && sessionActive) {
         if (mode !== "ticker") {
@@ -188,7 +196,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         who.append(
           dot(task.color, 7),
           h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
+          h("span", { class: "tool", text: agentLabel(task) }),
         );
         if (task.steps.length > 1) {
           who.append(h("span", {
@@ -214,7 +222,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 
       jump.style.display = detailOpen ? "none" : "";
 
-      const others = State.otherTasks.slice(0, 4);
+      const others = State.otherTasks.slice(0, 5);
       const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
       if (pillKey !== pillIds) {
         pillIds = pillKey;
@@ -227,7 +235,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 }
 
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
+  const label = task.source === "claudeCode" ? "Claude" : task.source === "codex" ? "Codex" : task.name;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
@@ -328,9 +336,9 @@ function buildQuestion(): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
+      who.append(agentWho(State.focusTask, agentLabel(State.focusTask) + " is asking a question"));
       const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
+      title.textContent = task?.steps.at(-1) ?? agentLabel(task) + " needs an answer.";
       clear(row);
       row.append(h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." }));
     },
@@ -353,7 +361,7 @@ function buildError(actions: ViewActions): ViewHost {
     sync() {
       const task = State.focusTask;
       clear(who);
-      who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
+      who.append(agentWho(task, agentLabel(task)));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
     },
@@ -374,7 +382,7 @@ function buildFinished(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code finished"));
+      who.append(agentWho(State.focusTask, agentLabel(State.focusTask) + " finished"));
       title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
     },
   };

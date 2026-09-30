@@ -184,7 +184,7 @@ fn set_paused(paused: bool) {
     integrations::set_paused(paused);
 }
 
-// ── Claude Code hooks ─────────────────────────────────────────────────────────
+// ── Claude Code + Codex hooks ─────────────────────────────────────────────────
 
 #[tauri::command]
 fn hooks_status() -> HookStatus {
@@ -215,6 +215,23 @@ fn hooks_apply(
         current.clone()
     };
     let _ = app.emit("settings-changed", updated);
+    Ok(backup)
+}
+
+#[tauri::command]
+fn codex_hooks_status() -> HookStatus {
+    hooks::codex_status()
+}
+
+#[tauri::command]
+fn codex_hooks_preview(install: bool) -> Result<HookPreview, String> {
+    hooks::codex_preview(install)
+}
+
+#[tauri::command]
+fn codex_hooks_apply(app: AppHandle, install: bool, fingerprint: String) -> Result<String, String> {
+    let backup = hooks::codex_write(install, &fingerprint)?;
+    let _ = app.emit("codex-hooks-changed", install);
     Ok(backup)
 }
 
@@ -393,6 +410,9 @@ pub fn run() {
             hooks_status,
             hooks_preview,
             hooks_apply,
+            codex_hooks_status,
+            codex_hooks_preview,
+            codex_hooks_apply,
             approval_decision,
             approval_ack,
             approval_decline,

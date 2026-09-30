@@ -60,7 +60,7 @@ export const Bridge = {
   /** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */
   log: (message: string) => call<void>("log_line", { message }),
 
-  // ── Claude Code hooks ─────────────────────────────────────────────────────
+  // ── Claude Code + Codex hooks ─────────────────────────────────────────────
   hooksStatus: () => call<HookStatus>("hooks_status"),
   /** Diff to show before anything is written. `install: false` previews removal. */
   hooksPreview: (install: boolean) => callOrThrow<HookPreview>("hooks_preview", { install }),
@@ -70,6 +70,11 @@ export const Bridge = {
    */
   hooksApply: (install: boolean, fingerprint: string) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint }),
+  codexHooksStatus: () => call<HookStatus>("codex_hooks_status"),
+  codexHooksPreview: (install: boolean) =>
+    callOrThrow<HookPreview>("codex_hooks_preview", { install }),
+  codexHooksApply: (install: boolean, fingerprint: string) =>
+    callOrThrow<string>("codex_hooks_apply", { install, fingerprint }),
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
