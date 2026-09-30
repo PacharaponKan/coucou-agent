@@ -177,7 +177,7 @@ class AppState {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
     this.focusId = id;
-    t.pillBadge = null;
+    if (t.pillBadge !== "approval") t.pillBadge = null;
     this.notify();
   }
 

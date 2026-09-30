@@ -15,10 +15,10 @@ on:
 permissions:
   contents: write
 
-# Publishing is paused: Defender flags the unsigned installer as
-# Trojan:Win32/Wacatac.H!ml (false positive, reported to Microsoft). Tags still
-# build, to check the app compiles, but nothing is uploaded. Set this back to
-# 'true' once the installer is signed or the detection is cleared.
+# Release publishing is paused: Defender flags the unsigned installer as
+# Trojan:Win32/Wacatac.H!ml (false positive, reported to Microsoft). CI still
+# builds, smoke-tests and uploads a workflow artifact for validation. Set this
+# back to 'true' once the installer is signed or the detection is cleared.
 env:
   PUBLISH: 'false'
 
@@ -50,6 +50,15 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install Codex CLI smoke dependency
+        shell: pwsh
+        run: |
+          npm install -g @openai/codex@latest
+          codex --version
+
+      - name: Build hook relay prerequisite
+        run: cargo build --release -p coucou-hook
 
       - name: Test Rust workspace
         run: cargo test --workspace
@@ -83,6 +92,12 @@ jobs:
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           "version=$version" >> $env:GITHUB_OUTPUT
           Get-ChildItem release | Format-Table Name, Length
+
+      - name: Smoke test clean install and startup
+        shell: pwsh
+        run: |
+          $v = "${{ steps.pack.outputs.version }}"
+          .\scripts\smoke-install.ps1 -InstallerPath "release\Coucou-Windows-$v-setup.exe"
 
       - uses: actions/upload-artifact@v4
         with:

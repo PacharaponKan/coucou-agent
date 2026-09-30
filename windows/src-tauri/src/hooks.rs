@@ -44,6 +44,8 @@ pub const CODEX_HOOK_EVENTS: &[(&str, u64)] = &[
     ("UserPromptSubmit", 10),
     ("PreToolUse", 10),
     ("PostToolUse", 10),
+    ("PreCompact", 10),
+    ("PostCompact", 10),
     ("PermissionRequest", 120),
     ("Stop", 10),
     ("Interrupt", 3),
@@ -159,19 +161,37 @@ fn codex_hook_command_windows(event: &str) -> String {
     format!("\"{exe}\" codex {event}")
 }
 
+fn handler_is_ours(handler: &Value) -> bool {
+    handler
+        .get("command")
+        .and_then(Value::as_str)
+        .map(|c| c.contains(MARKER))
+        .unwrap_or(false)
+}
+
 fn entry_is_ours(entry: &Value) -> bool {
     entry
         .get("hooks")
         .and_then(Value::as_array)
-        .map(|hooks| {
-            hooks.iter().any(|h| {
-                h.get("command")
-                    .and_then(Value::as_str)
-                    .map(|c| c.contains(MARKER))
-                    .unwrap_or(false)
-            })
-        })
+        .map(|hooks| hooks.iter().any(handler_is_ours))
         .unwrap_or(false)
+}
+
+fn without_our_handlers(entry: &Value) -> Option<Value> {
+    let mut out = entry.as_object().cloned()?;
+    let Some(list) = out.get("hooks").and_then(Value::as_array).cloned() else {
+        return Some(entry.clone());
+    };
+    let kept: Vec<Value> = list.into_iter().filter(|h| !handler_is_ours(h)).collect();
+    if kept.is_empty() {
+        return None;
+    }
+    out.insert("hooks".into(), Value::Array(kept));
+    Some(Value::Object(out))
+}
+
+fn cleaned_entries(list: Vec<Value>) -> Vec<Value> {
+    list.iter().filter_map(without_our_handlers).collect()
 }
 
 /// Settings with Coucou's hooks added; everything else is left untouched.
@@ -189,7 +209,7 @@ fn merged(existing: &Value) -> Value {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        list.retain(|entry| !entry_is_ours(entry));
+        list = cleaned_entries(list);
         list.push(json!({
             "hooks": [{
                 "type": "command",
@@ -218,7 +238,7 @@ fn codex_merged(existing: &Value) -> Value {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        list.retain(|entry| !entry_is_ours(entry));
+        list = cleaned_entries(list);
         list.push(json!({
             "hooks": [{
                 "type": "command",
@@ -244,8 +264,7 @@ fn without_ours(existing: &Value) -> Value {
     for (event, value) in hooks {
         match value.as_array() {
             Some(list) => {
-                let kept: Vec<Value> =
-                    list.iter().filter(|e| !entry_is_ours(e)).cloned().collect();
+                let kept: Vec<Value> = list.iter().filter_map(without_our_handlers).collect();
                 if !kept.is_empty() {
                     out.insert(event, Value::Array(kept));
                 }
@@ -395,11 +414,13 @@ pub fn codex_status() -> HookStatus {
         .get("hooks")
         .and_then(Value::as_object)
         .map(|hooks| {
-            hooks
-                .values()
-                .filter_map(Value::as_array)
-                .flatten()
-                .any(entry_is_ours)
+            CODEX_HOOK_EVENTS.iter().all(|(event, _)| {
+                hooks
+                    .get(*event)
+                    .and_then(Value::as_array)
+                    .map(|entries| entries.iter().any(entry_is_ours))
+                    .unwrap_or(false)
+            })
         })
         .unwrap_or(false);
     let hook_path = settings::hook_exe_path();
@@ -685,6 +706,37 @@ mod tests {
             text.contains("coucou-hook") && text.contains("codex PreToolUse")
         }));
         assert!(after["hooks"]["Interrupt"].is_array());
+    }
+
+    #[test]
+    fn reinstall_and_uninstall_preserve_foreign_handlers_in_the_same_group() {
+        let existing = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [
+                        { "type": "command", "command": "someone-elses-tool.exe" },
+                        { "type": "command", "command": "C:/old/coucou-hook.exe codex PreToolUse" }
+                    ]
+                }]
+            }
+        });
+
+        let after = codex_merged(&existing);
+        let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
+        let foreign_count = pre
+            .iter()
+            .filter(|entry| serde_json::to_string(entry).unwrap().contains("someone-elses-tool.exe"))
+            .count();
+        assert_eq!(foreign_count, 1, "foreign sibling handler was dropped or duplicated");
+
+        let cleaned = without_ours(&after);
+        let clean_pre = cleaned["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(clean_pre.len(), 1);
+        assert_eq!(clean_pre[0]["matcher"], "Bash");
+        let text = serde_json::to_string(&clean_pre[0]).unwrap();
+        assert!(text.contains("someone-elses-tool.exe"));
+        assert!(!text.contains("coucou-hook"));
     }
 
     #[test]

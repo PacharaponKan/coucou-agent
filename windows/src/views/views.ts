@@ -305,8 +305,12 @@ function buildApproval(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
+      const pending = State.pendingApproval;
+      const task = pending
+        ? State.tasks.find((x) => x.id === pending.agentId) ?? State.focusTask
+        : State.focusTask;
       clear(who);
-      who.append(agentWho(State.focusTask, "needs permission"));
+      who.append(agentWho(task, "needs permission"));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
@@ -351,10 +355,7 @@ function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title", text: "Workflow stopped." });
   const detail = h("div", { class: "detail" });
-  const row = h("div", { class: "actions" },
-    btn("Retry", "primary", () => actions.setView(State.defaultView())),
-    btn("Open in n8n", "secondary", () => actions.openUrl("")),
-  );
+  const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
     el,
@@ -364,6 +365,13 @@ function buildError(actions: ViewActions): ViewHost {
       who.append(agentWho(task, agentLabel(task)));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
+      clear(row);
+      row.append(btn("Back", "secondary", () => actions.setView(State.defaultView())));
+      if (task?.source === "claudeCode" || task?.source === "codex") {
+        row.append(btn("Open project", "primary", () => actions.openTerminal()));
+      } else if (task) {
+        row.append(btn("Open", "primary", () => actions.openTarget()));
+      }
     },
   };
 }
@@ -374,7 +382,7 @@ function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
   const row = h("div", { class: "actions" },
-    btn("Open terminal", "primary", () => actions.openTerminal()),
+    btn("Open project", "primary", () => actions.openTerminal()),
     btn("OK", "secondary", () => actions.collapse()),
   );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));

@@ -110,6 +110,7 @@ export class Island {
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
+        if (State.pendingApproval?.agentId === id) this.alert("approval");
       },
       openTerminal: () => {
         const cwd = State.focusTask?.sessionCwd ?? null;
@@ -145,8 +146,11 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        State.updateTask(req.agentId, "working");
-        State.setPillBadge(req.agentId, null);
+        const task = State.tasks.find((x) => x.id === req.agentId);
+        if (!req.sessionId || !task?.sessionId || task.sessionId === req.sessionId) {
+          State.updateTask(req.agentId, "working");
+          State.setPillBadge(req.agentId, null);
+        }
         this.setView(State.defaultView());
       },
       toggleSound: () => {

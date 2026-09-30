@@ -108,6 +108,11 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
 function upsert(agentId: string, projectName: string, cwd: string, sessionId?: string) {
   const t = State.tasks.find((x) => x.id === agentId);
   if (!t) return;
+  if (sessionId && t.sessionId && t.sessionId !== sessionId) {
+    t.steps = [];
+    t.stepIndex = 0;
+    t.pillBadge = null;
+  }
   t.name = projectName;
   if (sessionId) t.sessionId = sessionId;
   if (cwd) t.sessionCwd = cwd;
@@ -172,6 +177,19 @@ function handleHook(island: Island, payload: HookPayload) {
 
   switch (name) {
     case "SessionStart":
+      if (
+        State.pendingApproval?.agentId === agentId
+        && State.pendingApproval.sessionId
+        && sessionId
+        && State.pendingApproval.sessionId !== sessionId
+      ) {
+        void Bridge.approvalDecline(State.pendingApproval.requestId);
+        State.pendingApproval = null;
+        State.isPinned = false;
+        island.dropPin();
+        State.setPillBadge(agentId, null);
+        if (State.view === "approval") island.setView("overview");
+      }
       if (State.mode !== "expanded" && State.focusTask?.state === "idle") {
         State.setFocus(agentId);
       }
@@ -202,6 +220,16 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PostToolUse":
       State.updateTask(agentId, "working");
+      break;
+
+    case "PreCompact":
+      State.updateTask(agentId, "thinking");
+      State.appendStep(agentId, "Compacting context…");
+      break;
+
+    case "PostCompact":
+      State.updateTask(agentId, "thinking");
+      State.appendStep(agentId, "Context compacted");
       break;
 
     case "PostToolUseFailure":
@@ -309,8 +337,11 @@ function handleHook(island: Island, payload: HookPayload) {
         State.pendingApproval = null;
         State.isPinned = false;
         island.dropPin();
-        State.updateTask(pending.agentId, "working");
-        State.setPillBadge(pending.agentId, null);
+        const task = State.tasks.find((x) => x.id === pending.agentId);
+        if (!pending.sessionId || !task?.sessionId || task.sessionId === pending.sessionId) {
+          State.updateTask(pending.agentId, "working");
+          State.setPillBadge(pending.agentId, null);
+        }
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, 110_000);
