@@ -95,17 +95,30 @@ $oldCodexHome = $env:CODEX_HOME
 $oldApiKey = $env:OPENAI_API_KEY
 $env:CODEX_HOME = $codexHome
 $env:OPENAI_API_KEY = "sk-test-invalid"
-$oldNative = $PSNativeCommandUseErrorActionPreference
-$PSNativeCommandUseErrorActionPreference = $false
-$codexOutput = "" | codex exec --dangerously-bypass-hook-trust -C (Get-Location).Path "CI hook smoke" 2>&1 | Out-String
-$PSNativeCommandUseErrorActionPreference = $oldNative
-$env:CODEX_HOME = $oldCodexHome
-$env:OPENAI_API_KEY = $oldApiKey
+$codexStdout = Join-Path $codexHome "stdout.txt"
+$codexStderr = Join-Path $codexHome "stderr.txt"
+$codexOutput = ""
+try {
+  $codexProc = Start-Process -FilePath (Get-Command codex.cmd).Source `
+    -ArgumentList @("exec", "--dangerously-bypass-hook-trust", "-C", (Get-Location).Path, "ci-hook-smoke") `
+    -PassThru -RedirectStandardOutput $codexStdout -RedirectStandardError $codexStderr
+  if (-not $codexProc.WaitForExit(30000)) {
+    $codexProc.Kill()
+    throw "Codex SessionStart smoke exceeded 30 seconds."
+  }
+  $codexOutput = (Get-Content -LiteralPath $codexStdout -Raw -ErrorAction SilentlyContinue) + "`n" +
+    (Get-Content -LiteralPath $codexStderr -Raw -ErrorAction SilentlyContinue)
+} finally {
+  $env:CODEX_HOME = $oldCodexHome
+  $env:OPENAI_API_KEY = $oldApiKey
+}
 Require ($codexOutput -notmatch "failed to parse hooks config") "Codex rejected hooks.json: $codexOutput"
 Require ($codexOutput -match "hook: SessionStart Completed") "Codex never completed SessionStart hook: $codexOutput"
 Start-Sleep -Seconds 1
 $afterCodex = ([regex]::Matches((Get-Content -LiteralPath $log -Raw), "hook SessionStart")).Count
 Require ($afterCodex -gt $beforeCodex) "Codex did not execute commandWindows against the installed relay."
+$afterCodexLog = Get-Content -LiteralPath $log -Raw
+Require ($afterCodexLog -match "hook SessionStart source=codex") "Codex relay event lost its agent_source tag."
 Remove-Item -LiteralPath $codexHome -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Restarting the installed app..."
@@ -118,11 +131,12 @@ Stop-Process -Id $app2.Id -Force
 
 $installDir = Split-Path -Parent $exe
 $uninstaller = Get-ChildItem -LiteralPath $installDir -Filter "*uninstall*.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($uninstaller) {
-  Write-Host "Running silent uninstall smoke check..."
-  $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -PassThru -Wait
-  Require ($uninstall.ExitCode -eq 0) "Uninstaller exited with code $($uninstall.ExitCode)."
-  Require (-not (Test-Path -LiteralPath $relay)) "Uninstall left the staged relay behind."
-}
+Require ([bool]$uninstaller) "Installed package did not provide an uninstaller."
+Write-Host "Running silent uninstall smoke check..."
+$uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -PassThru -Wait
+Require ($uninstall.ExitCode -eq 0) "Uninstaller exited with code $($uninstall.ExitCode)."
+Start-Sleep -Seconds 1
+Require (-not (Test-Path -LiteralPath $relay)) "Uninstall left the staged relay behind."
+Require (-not (Test-Path -LiteralPath $exe)) "Uninstall left Coucou.exe installed."
 
 Write-Host "Clean install/start/relay/restart smoke test passed."

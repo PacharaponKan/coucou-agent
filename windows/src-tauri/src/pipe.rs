@@ -124,9 +124,14 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let source = payload
+        .get("agent_source")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
 
     if event != "PermissionRequest" {
-        log::line(format!("hook {event}"));
+        log::line(format!("hook {event} source={source}"));
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
         let _ = pipe.disconnect();
         return;
@@ -139,7 +144,7 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         pending.0.lock().unwrap().insert(id.clone(), tx);
     }
     payload["request_id"] = json!(id);
-    log::line(format!("hook PermissionRequest id={id}"));
+    log::line(format!("hook PermissionRequest source={source} id={id}"));
     let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
 
     let decision = wait_for_decision(&id, &mut rx).await;

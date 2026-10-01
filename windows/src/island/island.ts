@@ -321,6 +321,12 @@ export class Island {
   }
 
   collapse() {
+    if (State.pendingApproval) {
+      State.setFocus(State.pendingApproval.agentId);
+      this.holdPin();
+      this.alert("approval");
+      return;
+    }
     State.isPinned = false;
     this.fsm.pinned = false;
     // Drive the state machine rather than the mode: setting the mode behind its

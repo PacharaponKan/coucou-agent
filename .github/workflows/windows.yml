@@ -21,9 +21,12 @@ permissions:
 # back to 'true' once the installer is signed or the detection is cleared.
 env:
   PUBLISH: 'false'
+  CODEX_SMOKE_VERSION: '0.159.2'
 
 jobs:
   build:
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
     runs-on: windows-latest
     defaults:
       run:
@@ -51,8 +54,41 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install pinned Codex CLI
+        shell: pwsh
+        run: |
+          npm install -g "@openai/codex@$env:CODEX_SMOKE_VERSION"
+          $version = codex --version
+          $version
+          if ($version -notmatch [regex]::Escape($env:CODEX_SMOKE_VERSION)) {
+            throw "Expected Codex $env:CODEX_SMOKE_VERSION, got $version"
+          }
+
       - name: Test Rust workspace
+        env:
+          COUCOU_CODEX_HOOKS_EXPORT: ${{ github.workspace }}\windows\generated-hooks.json
         run: npm run test:rust
+
+      - name: Validate generated Codex hooks with Codex CLI
+        shell: pwsh
+        run: |
+          $codexHome = Join-Path $env:RUNNER_TEMP "coucou-codex-generated-hooks"
+          New-Item -ItemType Directory -Path $codexHome -Force | Out-Null
+          Copy-Item -LiteralPath generated-hooks.json -Destination (Join-Path $codexHome "hooks.json") -Force
+          $env:CODEX_HOME = $codexHome
+          $env:OPENAI_API_KEY = "sk-test-invalid"
+          $stdout = Join-Path $codexHome "stdout.txt"
+          $stderr = Join-Path $codexHome "stderr.txt"
+          $proc = Start-Process -FilePath (Get-Command codex.cmd).Source -ArgumentList @("exec", "--dangerously-bypass-hook-trust", "ci-hook-parse") -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if (-not $proc.WaitForExit(30000)) {
+            $proc.Kill()
+            throw "Codex hook parser smoke exceeded 30 seconds."
+          }
+          $text = (Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue)
+          if ($text -match "failed to parse hooks config") { throw $text }
+          if ($text -notmatch "hook: SessionStart") {
+            throw "Codex did not load the generated SessionStart hook.`n$text"
+          }
 
       # Three files carry the version and they drift silently. Publishing a
       # "0.1.1" that installs a 0.1.0 is the kind of thing nobody notices until
@@ -90,54 +126,6 @@ jobs:
           path: windows/release/Coucou-Windows-${{ steps.pack.outputs.version }}-setup.exe
           if-no-files-found: error
 
-      - name: Publish the release
-        if: env.PUBLISH == 'true' && startsWith(github.ref, 'refs/tags/windows-v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $v = "${{ steps.pack.outputs.version }}"
-          $notes = @"
-          Coucou for Windows $v — Mochi at the top of your screen.
-
-          Download ``Coucou-Windows-$v-setup.exe`` and run it. The installer is not
-          code-signed yet, so Windows SmartScreen shows a warning: click
-          **More info → Run anyway**.
-          "@
-          # --latest=false is not cosmetic: without it GitHub hands "Latest" to
-          # whichever release was published last, and the site's Download for Mac
-          # button points at /releases/latest. A Windows tag would silently send
-          # Mac users to the .exe. The macOS `v*` releases own that slot.
-          gh release create "${{ github.ref_name }}" `
-            "release/Coucou-Windows-$v-setup.exe" `
-            --title "Coucou for Windows $v" `
-            --notes $notes `
-            --latest=false
-
-      - name: Update the rolling windows-latest release
-        if: env.PUBLISH == 'true' && startsWith(github.ref, 'refs/tags/windows-v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $v = "${{ steps.pack.outputs.version }}"
-          $exists = gh release view windows-latest 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            # The tag has to follow the release, or windows-latest keeps pointing
-            # at the first commit it was ever created from and anyone building
-            # from it gets an old tree.
-            git tag -f windows-latest "${{ github.sha }}"
-            git push -f origin windows-latest
-            gh release edit windows-latest --title "Coucou for Windows (latest)" --notes "Always the newest Windows build — currently $v."
-            gh release upload windows-latest "release/Coucou-Windows-setup.exe" --clobber
-          } else {
-            gh release create windows-latest `
-              "release/Coucou-Windows-setup.exe" `
-              --title "Coucou for Windows (latest)" `
-              --notes "Always the newest Windows build — currently $v." `
-              --latest=false
-          }
-
   smoke:
     name: clean-install-smoke
     needs: build
@@ -152,11 +140,15 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install Codex CLI
+      - name: Install pinned Codex CLI
         shell: pwsh
         run: |
-          npm install -g @openai/codex@latest
-          codex --version
+          npm install -g "@openai/codex@$env:CODEX_SMOKE_VERSION"
+          $version = codex --version
+          $version
+          if ($version -notmatch [regex]::Escape($env:CODEX_SMOKE_VERSION)) {
+            throw "Expected Codex $env:CODEX_SMOKE_VERSION, got $version"
+          }
 
       - uses: actions/download-artifact@v4
         with:
@@ -169,3 +161,60 @@ jobs:
           $installer = Get-ChildItem -LiteralPath release -Filter "Coucou-Windows-*-setup.exe" -File | Select-Object -First 1
           if (-not $installer) { throw "Installer artifact is missing." }
           .\scripts\smoke-install.ps1 -InstallerPath $installer.FullName
+
+  publish:
+    name: publish-windows
+    needs: [build, smoke]
+    if: startsWith(github.ref, 'refs/tags/windows-v') && needs.build.result == 'success' && needs.smoke.result == 'success'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Coucou-Windows-setup
+          path: windows/release
+
+      - name: Publish the release
+        if: env.PUBLISH == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ needs.build.outputs.version }}"
+          $notes = @"
+          Coucou for Windows $v — Mochi at the top of your screen.
+
+          Download ``Coucou-Windows-$v-setup.exe`` and run it. The installer is not
+          code-signed yet, so Windows SmartScreen shows a warning: click
+          **More info → Run anyway**.
+          "@
+          gh release create "${{ github.ref_name }}" `
+            "release/Coucou-Windows-$v-setup.exe" `
+            --title "Coucou for Windows $v" `
+            --notes $notes `
+            --latest=false
+
+      - name: Update the rolling windows-latest release
+        if: env.PUBLISH == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ needs.build.outputs.version }}"
+          $exists = gh release view windows-latest 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            git tag -f windows-latest "${{ github.sha }}"
+            git push -f origin windows-latest
+            gh release edit windows-latest --title "Coucou for Windows (latest)" --notes "Always the newest Windows build — currently $v."
+            gh release upload windows-latest "release/Coucou-Windows-setup.exe" --clobber
+          } else {
+            gh release create windows-latest `
+              "release/Coucou-Windows-setup.exe" `
+              --title "Coucou for Windows (latest)" `
+              --notes "Always the newest Windows build — currently $v." `
+              --latest=false
+          }

@@ -162,7 +162,7 @@ fn codex_hook_command_windows(event: &str) -> String {
     format!("\"{exe}\" codex {event}")
 }
 
-fn entry_has_current_codex_handler(entry: &Value, event: &str) -> bool {
+fn entry_has_current_codex_handler(entry: &Value, event: &str, timeout: u64) -> bool {
     let expected = codex_hook_command(event);
     let expected_windows = codex_hook_command_windows(event);
     entry
@@ -174,6 +174,8 @@ fn entry_has_current_codex_handler(entry: &Value, event: &str) -> bool {
                     && handler.get("command").and_then(Value::as_str) == Some(expected.as_str())
                     && handler.get("commandWindows").and_then(Value::as_str)
                         == Some(expected_windows.as_str())
+                    && handler.get("timeout").and_then(Value::as_u64) == Some(timeout)
+                    && handler.get("async").and_then(Value::as_bool) != Some(true)
             })
         })
         .unwrap_or(false)
@@ -432,14 +434,14 @@ pub fn codex_status() -> HookStatus {
         .get("hooks")
         .and_then(Value::as_object)
         .map(|hooks| {
-            CODEX_HOOK_EVENTS.iter().all(|(event, _)| {
+            CODEX_HOOK_EVENTS.iter().all(|(event, timeout)| {
                 hooks
                     .get(*event)
                     .and_then(Value::as_array)
                     .map(|entries| {
                         entries
                             .iter()
-                            .any(|entry| entry_has_current_codex_handler(entry, event))
+                            .any(|entry| entry_has_current_codex_handler(entry, event, *timeout))
                     })
                     .unwrap_or(false)
             })
@@ -737,28 +739,63 @@ mod tests {
             "hooks": [{
                 "type": "command",
                 "command": codex_hook_command(event),
-                "commandWindows": codex_hook_command_windows(event)
+                "commandWindows": codex_hook_command_windows(event),
+                "timeout": 10
             }]
         });
-        assert!(entry_has_current_codex_handler(&current, event));
+        assert!(entry_has_current_codex_handler(&current, event, 10));
 
         let stale = json!({
             "hooks": [{
                 "type": "command",
                 "command": codex_hook_command(event),
-                "commandWindows": r#""C:\old\coucou-hook.exe" codex SessionStart"#
+                "commandWindows": r#""C:\old\coucou-hook.exe" codex SessionStart"#,
+                "timeout": 10
             }]
         });
-        assert!(!entry_has_current_codex_handler(&stale, event));
+        assert!(!entry_has_current_codex_handler(&stale, event, 10));
 
         let malformed = json!({
             "hooks": [{
                 "type": "http",
                 "command": codex_hook_command(event),
-                "commandWindows": codex_hook_command_windows(event)
+                "commandWindows": codex_hook_command_windows(event),
+                "timeout": 10
             }]
         });
-        assert!(!entry_has_current_codex_handler(&malformed, event));
+        assert!(!entry_has_current_codex_handler(&malformed, event, 10));
+
+        let async_handler = json!({
+            "hooks": [{
+                "type": "command",
+                "command": codex_hook_command(event),
+                "commandWindows": codex_hook_command_windows(event),
+                "timeout": 10,
+                "async": true
+            }]
+        });
+        assert!(!entry_has_current_codex_handler(&async_handler, event, 10));
+
+        let wrong_timeout = json!({
+            "hooks": [{
+                "type": "command",
+                "command": codex_hook_command(event),
+                "commandWindows": codex_hook_command_windows(event),
+                "timeout": 1
+            }]
+        });
+        assert!(!entry_has_current_codex_handler(&wrong_timeout, event, 10));
+    }
+
+    #[test]
+    fn export_generated_codex_hooks_for_cli_smoke_when_requested() {
+        let Ok(path) = std::env::var("COUCOU_CODEX_HOOKS_EXPORT") else {
+            return;
+        };
+        let generated = codex_merged(&json!({}));
+        let mut text = pretty(&generated);
+        text.push('\n');
+        std::fs::write(&path, text).expect("generated Codex hooks export should be writable");
     }
 
     #[test]
