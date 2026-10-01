@@ -157,8 +157,26 @@ fn codex_hook_command(event: &str) -> String {
 }
 
 fn codex_hook_command_windows(event: &str) -> String {
-    let exe = settings::hook_exe_path().to_string_lossy();
+    let path = settings::hook_exe_path();
+    let exe = path.to_string_lossy();
     format!("\"{exe}\" codex {event}")
+}
+
+fn entry_has_current_codex_handler(entry: &Value, event: &str) -> bool {
+    let expected = codex_hook_command(event);
+    let expected_windows = codex_hook_command_windows(event);
+    entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .map(|handlers| {
+            handlers.iter().any(|handler| {
+                handler.get("type").and_then(Value::as_str) == Some("command")
+                    && handler.get("command").and_then(Value::as_str) == Some(expected.as_str())
+                    && handler.get("commandWindows").and_then(Value::as_str)
+                        == Some(expected_windows.as_str())
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn handler_is_ours(handler: &Value) -> bool {
@@ -418,7 +436,11 @@ pub fn codex_status() -> HookStatus {
                 hooks
                     .get(*event)
                     .and_then(Value::as_array)
-                    .map(|entries| entries.iter().any(entry_is_ours))
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .any(|entry| entry_has_current_codex_handler(entry, event))
+                    })
                     .unwrap_or(false)
             })
         })
@@ -706,6 +728,37 @@ mod tests {
             text.contains("coucou-hook") && text.contains("codex PreToolUse")
         }));
         assert!(after["hooks"]["Interrupt"].is_array());
+    }
+
+    #[test]
+    fn codex_status_match_rejects_stale_or_malformed_handlers() {
+        let event = "SessionStart";
+        let current = json!({
+            "hooks": [{
+                "type": "command",
+                "command": codex_hook_command(event),
+                "commandWindows": codex_hook_command_windows(event)
+            }]
+        });
+        assert!(entry_has_current_codex_handler(&current, event));
+
+        let stale = json!({
+            "hooks": [{
+                "type": "command",
+                "command": codex_hook_command(event),
+                "commandWindows": ""C:\\old\\coucou-hook.exe" codex SessionStart"
+            }]
+        });
+        assert!(!entry_has_current_codex_handler(&stale, event));
+
+        let malformed = json!({
+            "hooks": [{
+                "type": "http",
+                "command": codex_hook_command(event),
+                "commandWindows": codex_hook_command_windows(event)
+            }]
+        });
+        assert!(!entry_has_current_codex_handler(&malformed, event));
     }
 
     #[test]
