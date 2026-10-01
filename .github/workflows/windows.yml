@@ -118,12 +118,13 @@ jobs:
           npm run pack
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           "version=$version" >> $env:GITHUB_OUTPUT
+          Copy-Item -LiteralPath generated-hooks.json -Destination release\generated-hooks.json -Force
           Get-ChildItem release | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
           name: Coucou-Windows-setup
-          path: windows/release/Coucou-Windows-${{ steps.pack.outputs.version }}-setup.exe
+          path: windows/release/
           if-no-files-found: error
 
   smoke:
@@ -140,6 +141,26 @@ jobs:
         with:
           node-version: 22
 
+      - name: Ensure Coucou starts without Codex CLI
+        shell: pwsh
+        run: |
+          npm uninstall -g @openai/codex 2>$null
+          if (Get-Command codex.cmd -ErrorAction SilentlyContinue) {
+            throw "Codex is still on PATH; missing-dependency smoke would be invalid."
+          }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Coucou-Windows-setup
+          path: windows/artifact
+
+      - name: First-run workflow without Codex
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath artifact -Filter "Coucou-Windows-*-setup.exe" -File -Recurse | Select-Object -First 1
+          if (-not $installer) { throw "Installer artifact is missing." }
+          .\scripts\smoke-install.ps1 -InstallerPath $installer.FullName -SkipCodexHook -KeepInstalled
+
       - name: Install pinned Codex CLI
         shell: pwsh
         run: |
@@ -150,17 +171,14 @@ jobs:
             throw "Expected Codex $env:CODEX_SMOKE_VERSION, got $version"
           }
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: Coucou-Windows-setup
-          path: windows/release
-
-      - name: Install, launch, relay and restart
+      - name: Reinstall and run Codex workflow end to end
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -LiteralPath release -Filter "Coucou-Windows-*-setup.exe" -File | Select-Object -First 1
+          $installer = Get-ChildItem -LiteralPath artifact -Filter "Coucou-Windows-*-setup.exe" -File -Recurse | Select-Object -First 1
+          $hooks = Get-ChildItem -LiteralPath artifact -Filter "generated-hooks.json" -File -Recurse | Select-Object -First 1
           if (-not $installer) { throw "Installer artifact is missing." }
-          .\scripts\smoke-install.ps1 -InstallerPath $installer.FullName
+          if (-not $hooks) { throw "Generated Codex hooks artifact is missing." }
+          .\scripts\smoke-install.ps1 -InstallerPath $installer.FullName -GeneratedHooksPath $hooks.FullName -PreserveExisting
 
   publish:
     name: publish-windows

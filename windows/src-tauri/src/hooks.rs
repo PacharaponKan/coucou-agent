@@ -5,12 +5,16 @@
 // anybody else's hooks, show the diff, and write only after an explicit click.
 // Uninstall removes Coucou's entries and nothing else.
 //
-// The command is only the quoted exe path in forward slashes plus the event name:
-// on Windows Claude Code runs hook commands through Git Bash, and anything with
-// PowerShell or cmd in it breaks.
+// Claude Code gets the original quoted forward-slash command because its hooks
+// run through Git Bash. Codex gets a Windows-specific quote-free PowerShell
+// bootstrap encoded as UTF-16LE Base64; this works around Codex's cmd.exe outer
+// quoting while still supporting relay paths (and JSON payloads) with Unicode or
+// spaces without changing the user's PATH.
 
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
@@ -158,8 +162,19 @@ fn codex_hook_command(event: &str) -> String {
 
 fn codex_hook_command_windows(event: &str) -> String {
     let path = settings::hook_exe_path();
-    let exe = path.to_string_lossy();
-    format!("\"{exe}\" codex {event}")
+    let exe = path.to_string_lossy().replace('\'', "''");
+    let event = event.replace('\'', "''");
+    let script = format!(
+        "$src=[Console]::OpenStandardInput();$m=[System.IO.MemoryStream]::new();$src.CopyTo($m);$b=$m.ToArray();$s=[System.Diagnostics.ProcessStartInfo]::new();$s.FileName='{exe}';$s.Arguments='codex {event}';$s.UseShellExecute=$false;$s.RedirectStandardInput=$true;$s.RedirectStandardOutput=$true;$s.CreateNoWindow=$true;$p=[System.Diagnostics.Process]::new();$p.StartInfo=$s;[void]$p.Start();$p.StandardInput.BaseStream.Write($b,0,$b.Length);$p.StandardInput.BaseStream.Flush();$p.StandardInput.Close();$dst=[Console]::OpenStandardOutput();$p.StandardOutput.BaseStream.CopyTo($dst);$dst.Flush();$p.WaitForExit();exit $p.ExitCode"
+    );
+    let mut utf16le = Vec::with_capacity(script.len() * 2);
+    for unit in script.encode_utf16() {
+        utf16le.extend_from_slice(&unit.to_le_bytes());
+    }
+    format!(
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+        BASE64.encode(utf16le)
+    )
 }
 
 fn entry_has_current_codex_handler(entry: &Value, event: &str, timeout: u64) -> bool {
@@ -175,7 +190,10 @@ fn entry_has_current_codex_handler(entry: &Value, event: &str, timeout: u64) -> 
                     && handler.get("commandWindows").and_then(Value::as_str)
                         == Some(expected_windows.as_str())
                     && handler.get("timeout").and_then(Value::as_u64) == Some(timeout)
-                    && handler.get("async").and_then(Value::as_bool) != Some(true)
+                    && match handler.get("async") {
+                        None | Some(Value::Bool(false)) => true,
+                        _ => false,
+                    }
             })
         })
         .unwrap_or(false)
@@ -733,6 +751,34 @@ mod tests {
     }
 
     #[test]
+    fn codex_reinstall_is_idempotent_and_keeps_foreign_handlers_once() {
+        let existing = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "hooks": [{ "type": "command", "command": "keep-me.exe" }]
+                }]
+            }
+        });
+        let once = codex_merged(&existing);
+        let twice = codex_merged(&once);
+
+        for (event, timeout) in CODEX_HOOK_EVENTS {
+            let entries = twice["hooks"][*event].as_array().unwrap();
+            let ours = entries
+                .iter()
+                .filter(|entry| entry_has_current_codex_handler(entry, event, *timeout))
+                .count();
+            assert_eq!(ours, 1, "reinstall duplicated Coucou handler for {event}");
+        }
+        let session = twice["hooks"]["SessionStart"].as_array().unwrap();
+        let foreign = session
+            .iter()
+            .filter(|entry| serde_json::to_string(entry).unwrap().contains("keep-me.exe"))
+            .count();
+        assert_eq!(foreign, 1, "reinstall dropped or duplicated foreign handler");
+    }
+
+    #[test]
     fn codex_status_match_rejects_stale_or_malformed_handlers() {
         let event = "SessionStart";
         let current = json!({
@@ -775,6 +821,19 @@ mod tests {
             }]
         });
         assert!(!entry_has_current_codex_handler(&async_handler, event, 10));
+
+        for invalid_async in [json!("true"), json!(1), Value::Null] {
+            let invalid = json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": codex_hook_command(event),
+                    "commandWindows": codex_hook_command_windows(event),
+                    "timeout": 10,
+                    "async": invalid_async
+                }]
+            });
+            assert!(!entry_has_current_codex_handler(&invalid, event, 10));
+        }
 
         let wrong_timeout = json!({
             "hooks": [{
@@ -908,6 +967,13 @@ mod tests {
         let codex_clean: Value =
             serde_json::from_slice(&std::fs::read(&codex_path).unwrap()).unwrap();
         assert_eq!(codex_clean, json!({}));
+
+        // A malformed existing Codex file is user data. Refuse both preview and
+        // write and leave the bytes exactly untouched instead of "repairing" it.
+        std::fs::write(&codex_path, b"{ broken codex").unwrap();
+        assert!(codex_preview(true).is_err());
+        assert!(codex_write(true, "whatever").is_err());
+        assert_eq!(std::fs::read(&codex_path).unwrap(), b"{ broken codex");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

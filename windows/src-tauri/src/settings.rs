@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub sound_enabled: bool,
     pub sound_volume: f64,
@@ -72,9 +72,25 @@ fn settings_path() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    match std::fs::read(settings_path()) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => Settings::default(),
+    let path = settings_path();
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.iter().all(|b| b.is_ascii_whitespace()) => Settings::default(),
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(settings) => settings,
+            Err(err) => {
+                crate::log::line(format!(
+                    "invalid settings.json — using defaults without overwriting it: {err}"
+                ));
+                Settings::default()
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+        Err(err) => {
+            crate::log::line(format!(
+                "could not read settings.json — using defaults: {err}"
+            ));
+            Settings::default()
+        }
     }
 }
 
@@ -84,4 +100,30 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(settings_path(), json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_fields_keep_existing_values_and_default_new_ones() {
+        let parsed: Settings = serde_json::from_str(
+            r#"{"soundEnabled":false,"soundVolume":0.5,"autoCloseInterval":9,"absenceInterval":30,"activeIntegrations":[],"screen":"cursor","autostart":true,"hooksInstalled":true}"#,
+        )
+        .unwrap();
+        assert!(!parsed.sound_enabled);
+        assert_eq!(parsed.sound_volume, 0.5);
+        assert_eq!(parsed.screen, "cursor");
+        assert!(parsed.autostart);
+        assert_eq!(parsed.model, default_model());
+    }
+
+    #[test]
+    fn wrong_types_are_rejected_instead_of_partially_applied() {
+        let parsed = serde_json::from_str::<Settings>(
+            r#"{"soundEnabled":"yes","soundVolume":0.5}"#,
+        );
+        assert!(parsed.is_err());
+    }
 }
