@@ -72,6 +72,7 @@ Require (Test-Path -LiteralPath $log) "Startup did not create coucou.log."
 Write-Host "Checking repeated launch / single-instance behavior..."
 $second = Start-Process -FilePath $exe -PassThru
 Require ($second.WaitForExit(7000)) "Second Coucou launch did not hand off and exit."
+Require ($second.ExitCode -eq 0) "Second Coucou launch exited with code $($second.ExitCode) instead of a clean single-instance handoff."
 Require (-not $app.HasExited) "Second launch terminated the primary Coucou instance."
 Start-Sleep -Milliseconds 300
 $instances = @(Get-Process -Name "coucou" -ErrorAction SilentlyContinue)
@@ -82,10 +83,12 @@ $payload = @{
   session_id = "ci-smoke"
   cwd = (Get-Location).Path
 } | ConvertTo-Json -Compress
+$manualBefore = ([regex]::Matches((Get-Content -LiteralPath $log -Raw), "hook SessionStart source=codex")).Count
 $payload | & $relay codex SessionStart
 Start-Sleep -Seconds 1
 $logText = Get-Content -LiteralPath $log -Raw
-Require ($logText -match "hook SessionStart") "Relay connected, but SessionStart never reached Coucou."
+$manualAfter = ([regex]::Matches($logText, "hook SessionStart source=codex")).Count
+Require ($manualAfter -gt $manualBefore) "Relay connected, but this SessionStart never reached Coucou."
 
 Write-Host "Checking malformed hook payload is ignored safely..."
 $badIn = Join-Path $env:TEMP "coucou-hook-bad-in.json"
@@ -112,12 +115,14 @@ Require (-not $app.HasExited) "Coucou failed to start with an empty settings.jso
 Write-Host "Checking invalid settings recovery and diagnostics..."
 Stop-Process -Id $app.Id -Force
 Start-Sleep -Seconds 1
+$badSettingsBefore = ([regex]::Matches((Get-Content -LiteralPath $log -Raw), "invalid settings\.json")).Count
 [System.IO.File]::WriteAllText($settingsFile, "{ broken settings")
 $app = Start-Process -FilePath $exe -PassThru
 Start-Sleep -Seconds 4
 Require (-not $app.HasExited) "Coucou failed to start with an invalid settings.json."
 $badSettingsLog = Get-Content -LiteralPath $log -Raw
-Require ($badSettingsLog -match "invalid settings\.json") "Invalid settings fallback was not recorded in coucou.log."
+$badSettingsAfter = ([regex]::Matches($badSettingsLog, "invalid settings\.json")).Count
+Require ($badSettingsAfter -gt $badSettingsBefore) "This invalid settings fallback was not recorded in coucou.log."
 Require ((Get-Content -LiteralPath $settingsFile -Raw) -eq "{ broken settings") "Coucou overwrote the user's invalid settings file."
 
 if (-not $SkipCodexHook) {
