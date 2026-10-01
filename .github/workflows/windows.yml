@@ -51,17 +51,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Codex CLI smoke dependency
-        shell: pwsh
-        run: |
-          npm install -g @openai/codex@latest
-          codex --version
-
-      - name: Build hook relay prerequisite
-        run: cargo build --release -p coucou-hook
-
       - name: Test Rust workspace
-        run: cargo test --workspace
+        run: npm run test:rust
 
       # Three files carry the version and they drift silently. Publishing a
       # "0.1.1" that installs a 0.1.0 is the kind of thing nobody notices until
@@ -92,12 +83,6 @@ jobs:
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           "version=$version" >> $env:GITHUB_OUTPUT
           Get-ChildItem release | Format-Table Name, Length
-
-      - name: Smoke test clean install and startup
-        shell: pwsh
-        run: |
-          $v = "${{ steps.pack.outputs.version }}"
-          .\scripts\smoke-install.ps1 -InstallerPath "release\Coucou-Windows-$v-setup.exe"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -152,3 +137,35 @@ jobs:
               --notes "Always the newest Windows build — currently $v." `
               --latest=false
           }
+
+  smoke:
+    name: clean-install-smoke
+    needs: build
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Codex CLI
+        shell: pwsh
+        run: |
+          npm install -g @openai/codex@latest
+          codex --version
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Coucou-Windows-setup
+          path: windows/release
+
+      - name: Install, launch, relay and restart
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath release -Filter "Coucou-Windows-*-setup.exe" -File | Select-Object -First 1
+          if (-not $installer) { throw "Installer artifact is missing." }
+          .\scripts\smoke-install.ps1 -InstallerPath $installer.FullName

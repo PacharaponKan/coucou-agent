@@ -336,12 +336,20 @@ export class Island {
     this.expand(view);
   }
 
+  /** Keep a pending human-action alert visible even if an old hover timer exists. */
+  holdPin() {
+    State.isPinned = true;
+    this.fsm.pinned = true;
+    this.fsm.cancelTimers();
+  }
+
   reveal() {
     this.fsm.reveal();
   }
 
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
+    State.isPinned = false;
     this.fsm.pinned = false;
   }
 

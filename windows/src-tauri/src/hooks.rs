@@ -795,6 +795,30 @@ mod tests {
         assert!(write(true, "whatever").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"{ broken");
 
+        // A brand-new Codex user has no .codex directory or hooks.json yet.
+        // Preview must still work, write must create the directory atomically,
+        // and status is only green once every required event is present.
+        let codex_path = codex_hooks_path();
+        assert!(!codex_path.exists());
+        let codex_plan = codex_preview(true).expect("first Codex install should preview");
+        assert!(codex_plan.diff.contains("codex"));
+        codex_write(true, &codex_plan.fingerprint).expect("first Codex install should write");
+        assert!(codex_path.exists());
+        assert!(codex_status().installed);
+
+        let codex_after: Value =
+            serde_json::from_slice(&std::fs::read(&codex_path).unwrap()).unwrap();
+        for (event, _) in CODEX_HOOK_EVENTS {
+            assert!(codex_after["hooks"][*event].is_array(), "missing Codex event {event}");
+        }
+
+        let remove = codex_preview(false).unwrap();
+        codex_write(false, &remove.fingerprint).expect("Codex uninstall should write");
+        assert!(!codex_status().installed);
+        let codex_clean: Value =
+            serde_json::from_slice(&std::fs::read(&codex_path).unwrap()).unwrap();
+        assert_eq!(codex_clean, json!({}));
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

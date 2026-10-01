@@ -25,10 +25,13 @@ function Find-CoucouExe {
 $installer = (Resolve-Path -LiteralPath $InstallerPath).Path
 $runtimeDir = Join-Path $env:LOCALAPPDATA "Coucou"
 $settingsDir = Join-Path $env:APPDATA "Coucou"
+$programDir = Join-Path $env:LOCALAPPDATA "Programs\Coucou"
 
 # Make stale developer/runtime state impossible to hide a packaging bug.
+Get-Process -Name "coucou" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $settingsDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $programDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Installing from a clean Coucou runtime/config state..."
 $install = Start-Process -FilePath $installer -ArgumentList "/S" -PassThru -Wait
@@ -57,6 +60,53 @@ $payload | & $relay codex SessionStart
 Start-Sleep -Seconds 1
 $logText = Get-Content -LiteralPath $log -Raw
 Require ($logText -match "hook SessionStart") "Relay connected, but SessionStart never reached Coucou."
+
+# Exercise Codex's real hooks.json parser and Windows command selection. The
+# generic command deliberately fails; only commandWindows points at our relay.
+# A dummy key is enough to create a session and fire SessionStart before the
+# expected authentication failure reaches inference.
+$codexHome = Join-Path (Get-Location) ".ci-codex-home"
+Remove-Item -LiteralPath $codexHome -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $codexHome | Out-Null
+$codexHooks = @{
+  hooks = @{
+    SessionStart = @(
+      @{
+        hooks = @(
+          @{
+            type = "command"
+            command = "cmd /c exit 99"
+            commandWindows = '"' + $relay + '" codex SessionStart'
+            timeout = 5
+          }
+        )
+      }
+    )
+  }
+}
+$hooksJson = $codexHooks | ConvertTo-Json -Depth 8
+[System.IO.File]::WriteAllText(
+  (Join-Path $codexHome "hooks.json"),
+  $hooksJson,
+  (New-Object System.Text.UTF8Encoding($false))
+)
+$beforeCodex = ([regex]::Matches((Get-Content -LiteralPath $log -Raw), "hook SessionStart")).Count
+$oldCodexHome = $env:CODEX_HOME
+$oldApiKey = $env:OPENAI_API_KEY
+$env:CODEX_HOME = $codexHome
+$env:OPENAI_API_KEY = "sk-test-invalid"
+$oldNative = $PSNativeCommandUseErrorActionPreference
+$PSNativeCommandUseErrorActionPreference = $false
+$codexOutput = "" | codex exec --dangerously-bypass-hook-trust -C (Get-Location).Path "CI hook smoke" 2>&1 | Out-String
+$PSNativeCommandUseErrorActionPreference = $oldNative
+$env:CODEX_HOME = $oldCodexHome
+$env:OPENAI_API_KEY = $oldApiKey
+Require ($codexOutput -notmatch "failed to parse hooks config") "Codex rejected hooks.json: $codexOutput"
+Require ($codexOutput -match "hook: SessionStart Completed") "Codex never completed SessionStart hook: $codexOutput"
+Start-Sleep -Seconds 1
+$afterCodex = ([regex]::Matches((Get-Content -LiteralPath $log -Raw), "hook SessionStart")).Count
+Require ($afterCodex -gt $beforeCodex) "Codex did not execute commandWindows against the installed relay."
+Remove-Item -LiteralPath $codexHome -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Restarting the installed app..."
 Stop-Process -Id $app.Id -Force
