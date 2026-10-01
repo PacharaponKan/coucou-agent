@@ -47,7 +47,7 @@ if (-not $PreserveExisting) {
   Remove-Item -LiteralPath $settingsDir -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $programDir -Recurse -Force -ErrorAction SilentlyContinue
 } else {
-  Require (Test-Path -LiteralPath $programDir) "PreserveExisting requested, but no existing Coucou install was found."
+  Require ([bool](Find-CoucouExe)) "PreserveExisting requested, but no existing Coucou install was found."
 }
 
 Write-Host "Installing from a clean Coucou runtime/config state..."
