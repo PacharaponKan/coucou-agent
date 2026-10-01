@@ -746,7 +746,7 @@ mod tests {
             "hooks": [{
                 "type": "command",
                 "command": codex_hook_command(event),
-                "commandWindows": ""C:\\old\\coucou-hook.exe" codex SessionStart"
+                "commandWindows": r#""C:\old\coucou-hook.exe" codex SessionStart"#
             }]
         });
         assert!(!entry_has_current_codex_handler(&stale, event));
