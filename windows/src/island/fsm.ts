@@ -43,7 +43,7 @@ export class IslandStateMachine {
         this.clear("homeCollapse");
         break;
       case "coucou":
-        this.scheduleGreetCollapse(this.greetHoverCollapseDelay);
+        if (!this.pinned) this.scheduleGreetCollapse(this.greetHoverCollapseDelay);
         break;
     }
   }
@@ -60,7 +60,7 @@ export class IslandStateMachine {
         break;
       case "coucou":
         this.clear("greetCollapse");
-        this.transition("petit");
+        if (!this.pinned) this.transition("petit");
         break;
     }
   }
@@ -74,6 +74,7 @@ export class IslandStateMachine {
   /** Greeting animation finished (T.end). Doesn't override a running hover timer. */
   greetComplete() {
     if (this.state !== "coucou") return;
+    if (this.pinned) return;
     if (this.greetCollapse == null) this.scheduleGreetCollapse(this.greetAutoCollapseDelay);
   }
 
@@ -82,7 +83,7 @@ export class IslandStateMachine {
     if (this.state !== "hidden") return;
     this.cancelTimers();
     this.transition("petit");
-    this.schedulePetitHide();
+    if (!this.pinned) this.schedulePetitHide();
   }
 
   /** Alert or explicit request: open straight to expanded. */
@@ -106,6 +107,7 @@ export class IslandStateMachine {
 
   private schedulePetitHide() {
     this.clear("petitHide");
+    if (this.pinned) return;
     this.petitHide = window.setTimeout(() => {
       this.petitHide = null;
       if (this.state === "petit") this.transition("hidden");
@@ -123,6 +125,7 @@ export class IslandStateMachine {
 
   private scheduleGreetCollapse(delay: number) {
     this.clear("greetCollapse");
+    if (this.pinned) return;
     this.greetCollapse = window.setTimeout(() => {
       this.greetCollapse = null;
       if (this.state === "coucou") this.transition("petit");
